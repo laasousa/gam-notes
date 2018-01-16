@@ -194,3 +194,79 @@ plot_engine_tent_model(.01, 20)
 plot_engine_tent_model(2, 20)
 plot_engine_tent_model(100, 20)
 ```
+
+We can choose the penalty using cross validation. The book covers ordinary
+leave-one-out cross validation and then presents a _generalized cross
+validation_ score which uses an average of the influence matrix instead of all
+the influence values.
+
+```{r}
+gcv_tent <- function(y, x, knots, min_penalty = exp(-9), 
+                     max_penalty = exp(11)) {
+ n_x <- length(x)
+ penalties <- seq(log(min_penalty), log(max_penalty), length.out = 90)
+ scores <- rep(NA, length(penalties))
+ 
+  for (penalty_i in seq_along(penalties)) {
+    m <- fit_penalized_tent(y, x, knots, exp(penalties[penalty_i]))
+    influence_sum <- sum(influence(m)[["hat"]][seq_along(x)])
+    resid_sum_sq <- sum((y - fitted(m)[seq_along(x)]) ^ 2)
+    scores[penalty_i] <- n_x * resid_sum_sq / (n_x - influence_sum) ^ 2
+  }
+  data.frame(penalties = exp(penalties), scores)
+}
+
+ggplot(gcv_tent(engine$wear, engine$size, knots_20)) + 
+  aes(x = log(penalties), y = scores) + 
+  geom_line()
+
+plot_engine_tent_model(18, 20)
+```
+
+We have to add constraints in order to have more than one smooth function in a
+model. Two smoothing functions may differ by a constant, so we need to impose a
+constraint to make them identifiable. The book talks about a sum-to-zero
+constraint. Apparently, we center the columns by subtracting the column means.
+But this reduces the matrix's rank, so we need to drop one of the columns. I
+take his word for it.
+
+```{r}
+# Removing column means reduces the matrix rank
+x_mat_original <- tent(engine$size, six_knots)
+Matrix::rankMatrix(x_mat_original)[1]
+
+x_mat_centered <- sweep(x_mat_original, 2, colMeans(x_mat_original))
+Matrix::rankMatrix(x_mat_centered)[1]
+
+
+constrain_tent <- function(x, knots, cmx = NULL, m = 2) {
+  n_knots <- length(knots)
+  # Remove a column by dropping last column
+  X <- tent(x, knots)[, -n_knots]
+  D <- diff(diag(n_knots), differences = m)[, -n_knots]
+  # Subtract column means
+  if (is.null(cmx)) cmx <- colMeans(X)
+  X <- sweep(X, 2, cmx)  
+  list(X = X, D = D, cmx = cmx)
+}
+```
+
+Here is a procedure to fit two smooths.
+
+```{r}
+library(magrittr)
+fit_double_tree <- function(y, x1, x2, smoothing, knots = 10) {
+  x1_k <- modelr::seq_range(x1, n = knots)
+  x2_k <- modelr::seq_range(x2, n = knots)
+  x1_mat_info <- constrain_tent(x1, x1_k)
+  x2_mat_info <- constrain_tent(x2, x2_k)
+  
+  n_d <- nrow(x1_mat_info$D) * 2
+  sp <- sqrt(sp)
+  X <- cbind(
+    c(rep(1, nrow(x1_mat_info$X)), rep(0, n_d)), 
+    rbind(x1_mat_info$X, sp[1] * x1_mat_info$D, 0 * x1_mat_info$D))
+    )
+}
+```
+
